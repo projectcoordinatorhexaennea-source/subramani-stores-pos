@@ -578,7 +578,8 @@ def products():
                       vals+(bc,num(f.get("stock"))))
             flash("Product added.")
         d.commit(); return redirect("/products")
-    rows = d.execute("select * from products where active=1 order by dept,name").fetchall()
+    rows_raw = d.execute("select * from products where active=1 order by dept,name").fetchall()
+    rows = [dict(r) for r in rows_raw]
     return page("""
 <div class="page-head"><h1>""" + ICONS['products'] + """ {{ t('products') }}</h1></div>
 <p class="sub">Enter an existing barcode to update. Leave stock blank to keep current value.</p>
@@ -667,12 +668,14 @@ def inventory():
         d.execute("insert into stock_adj(product_id,date,qty_change,reason,note,new_stock) values(?,?,?,?,?,?)",
                   (pid,datetime.now().isoformat(timespec="seconds"),change,reason,note,new_stock))
         d.commit(); flash(f"Stock adjusted: {p['name']} → {new_stock:g}"); return redirect("/inventory")
-    rows = d.execute("select * from products where active=1 order by dept,name").fetchall()
+    rows_raw = d.execute("select * from products where active=1 order by dept,name").fetchall()
+    rows = [dict(r) for r in rows_raw]
     total_val = sum(r["stock"]*r["cost"] for r in rows)
     total_mrp_val = sum(r["stock"]*r["mrp"] for r in rows)
     low_count = sum(1 for r in rows if r["stock"]<=r["reorder"])
-    recent_adj = d.execute("""select sa.*,p.name pname from stock_adj sa
+    recent_adj_raw = d.execute("""select sa.*,p.name pname from stock_adj sa
         join products p on p.id=sa.product_id order by sa.id desc limit 20""").fetchall()
+    recent_adj = [dict(r) for r in recent_adj_raw]
     return page("""
 <div class="page-head"><h1>""" + ICONS['inventory'] + """ {{ t('inventory') }}</h1>
 <button type="button" class="scan-btn" onclick="openInvScanner()">""" + ICONS['camera'] + """ Scan to Adjust</button>
