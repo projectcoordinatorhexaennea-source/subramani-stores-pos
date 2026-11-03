@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.secret
+stores.db
+.env
+env/
+venv/
+update_user.py
+hexigo-android/
