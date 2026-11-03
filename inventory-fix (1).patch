@@ -1,0 +1,86 @@
+diff --git a/app.py b/app.py
+index 3cc0a2a..dcb2860 100644
+--- a/app.py
++++ b/app.py
+@@ -74,6 +74,11 @@ def init():
+         c.execute("alter table products add column active integer default 1")
+     if "hsn" not in cols:
+         c.execute("alter table products add column hsn text default ''")
++    # clean up blank/NULL values left by imports so every page can do arithmetic on them
++    for col, dflt in (("stock",0),("cost",0),("mrp",0),("gst",18),("reorder",5)):
++        c.execute(f"update products set {col}=? where {col} is null or trim({col})=''",(dflt,))
++    c.execute("update products set active=1 where active is null")
++    c.commit()
+     if not c.execute("select 1 from users").fetchone():
+         pw = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(9)
+         c.execute("insert into users(username,pw) values('admin',?)",(generate_password_hash(pw),))
+@@ -104,6 +109,22 @@ def num(v, default=0.0):
+     try: return float(v)
+     except (TypeError,ValueError): return default
+ 
++_NUM_DEFAULTS = dict(gst=18.0, mrp=0.0, cost=0.0, stock=0.0, reorder=5.0)
++
++def product_rows(d):
++    """Active products as plain dicts. NULL / blank / text numbers (e.g. from a CSV import
++    straight into the DB) are coerced so the products & inventory pages never crash."""
++    out = []
++    for r in d.execute("select * from products where active=1 order by dept,name").fetchall():
++        r = dict(r)
++        for k, dflt in _NUM_DEFAULTS.items():
++            r[k] = num(r.get(k), dflt)
++        r["dept"] = (r.get("dept") or "").strip() or "General"
++        r["name"] = r.get("name") or ""
++        r["barcode"] = r.get("barcode") or ""
++        out.append(r)
++    return out
++
+ # ── Icons (Lucide-style SVG) ─────────────────────────────────────────
+ _I = lambda d: f'<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">{d}</svg>'
+ ICONS = dict(
+@@ -578,8 +599,7 @@ def products():
+                       vals+(bc,num(f.get("stock"))))
+             flash("Product added.")
+         d.commit(); return redirect("/products")
+-    rows_raw = d.execute("select * from products where active=1 order by dept,name").fetchall()
+-    rows = [dict(r) for r in rows_raw]
++    rows = product_rows(d)
+     return page("""
+ <div class="page-head"><h1>""" + ICONS['products'] + """ {{ t('products') }}</h1></div>
+ <p class="sub">Enter an existing barcode to update. Leave stock blank to keep current value.</p>
+@@ -662,14 +682,14 @@ def inventory():
+         p = d.execute("select * from products where id=? and active=1",(pid,)).fetchone()
+         if not p: flash("Product not found."); return redirect("/inventory")
+         if change==0: flash("Enter a non-zero quantity."); return redirect("/inventory")
+-        new_stock = p["stock"]+change
+-        if new_stock<0: flash(f"Cannot reduce below zero. Current stock: {p['stock']:g}"); return redirect("/inventory")
++        cur = num(p["stock"])
++        new_stock = cur+change
++        if new_stock<0: flash(f"Cannot reduce below zero. Current stock: {cur:g}"); return redirect("/inventory")
+         d.execute("update products set stock=? where id=?",(new_stock,pid))
+         d.execute("insert into stock_adj(product_id,date,qty_change,reason,note,new_stock) values(?,?,?,?,?,?)",
+                   (pid,datetime.now().isoformat(timespec="seconds"),change,reason,note,new_stock))
+         d.commit(); flash(f"Stock adjusted: {p['name']} → {new_stock:g}"); return redirect("/inventory")
+-    rows_raw = d.execute("select * from products where active=1 order by dept,name").fetchall()
+-    rows = [dict(r) for r in rows_raw]
++    rows = product_rows(d)
+     total_val = sum(r["stock"]*r["cost"] for r in rows)
+     total_mrp_val = sum(r["stock"]*r["mrp"] for r in rows)
+     low_count = sum(1 for r in rows if r["stock"]<=r["reorder"])
+@@ -709,7 +729,7 @@ def inventory():
+ <td class="n">{{ p.cost|inr }}</td><td class="n">{{ p.mrp|inr }}</td>
+ <td class="n">{% if p.stock<=p.reorder %}<span class="badge b-err">{{ '%g'|format(p.stock) }}</span>{% else %}<span class="badge b-ok">{{ '%g'|format(p.stock) }}</span>{% endif %}</td>
+ <td class="n">{{ '%g'|format(p.reorder) }}</td><td class="n">{{ (p.stock*p.cost)|inr }}</td>
+-<td><button type="button" class="bs bsm" onclick='openAdj({{ p.id }},"{{ p.name }}",{{ p.stock }})'>± Adjust</button></td>
++<td><button type="button" class="bs bsm" onclick='openAdj({{ p.id }},{{ p.name|tojson }},{{ p.stock }})'>± Adjust</button></td>
+ </tr>{% endfor %}</tbody></table></div>
+ 
+ <!-- Stock adjustment modal -->
+@@ -764,7 +784,7 @@ function closeInvScanner(){if(invScanner){try{invScanner.stop().then(()=>{invSca
+ @app.route("/inventory/csv")
+ @login_required
+ def inventory_csv():
+-    rows = db().execute("select * from products where active=1 order by dept,name").fetchall()
++    rows = product_rows(db())
+     si = io.StringIO()
+     w = csv.writer(si)
+     w.writerow(["Barcode","Name","Department","MRP","Cost","GST%","Stock","Reorder Level","Stock Value (Cost)","Stock Value (MRP)"])
