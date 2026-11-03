@@ -740,7 +740,7 @@ function openAdj(id,name,stock){document.getElementById('adj-pid').value=id;
   document.getElementById('adj-qty').value='';document.getElementById('adj-modal').classList.add('open');
   setTimeout(()=>document.getElementById('adj-qty').focus(),100)}
 function closeAdj(){document.getElementById('adj-modal').classList.remove('open')}
-const invProds={{ rows|tojson }};
+const invProds={{ inv_prods|tojson }};
 let invScanner=null;
 function openInvScanner(){
   document.getElementById('inv-scanner-modal').classList.add('open');
@@ -754,7 +754,7 @@ function openInvScanner(){
   catch(e){alert('Camera not available: '+e);closeInvScanner()}}
 function closeInvScanner(){if(invScanner){try{invScanner.stop().then(()=>{invScanner.clear();invScanner=null}).catch(()=>{invScanner=null})}catch(e){invScanner=null}}
   document.getElementById('inv-scanner-modal').classList.remove('open')}
-</script>""", rows=rows, total_val=total_val, total_mrp_val=total_mrp_val, low_count=low_count,
+</script>""", rows=rows, inv_prods=[dict(id=r["id"],barcode=r["barcode"],name=r["name"],stock=r["stock"]) for r in rows], total_val=total_val, total_mrp_val=total_mrp_val, low_count=low_count,
     adj=recent_adj, depts=sorted({r["dept"] for r in rows}))
 
 
