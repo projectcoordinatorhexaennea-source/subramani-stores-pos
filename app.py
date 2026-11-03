@@ -30,7 +30,7 @@ app.config.update(SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_HTTPONLY=True)
 SCHEMA = """
 create table if not exists users(id integer primary key, username text unique, pw text);
 create table if not exists products(id integer primary key, barcode text unique, name text, dept text,
-  gst real default 18, mrp real default 0, cost real default 0, stock real default 0, reorder real default 5, active integer default 1);
+  hsn text default '', gst real default 18, mrp real default 0, cost real default 0, stock real default 0, reorder real default 5, active integer default 1);
 create table if not exists bills(id integer primary key, number text unique, ts text, phone text,
   gross real, discount real, total real, tax real, mode text);
 create table if not exists bill_items(id integer primary key, bill_id integer, product_id integer,
@@ -72,6 +72,8 @@ def init():
     cols = [r[1] for r in c.execute("pragma table_info(products)")]
     if "active" not in cols:
         c.execute("alter table products add column active integer default 1")
+    if "hsn" not in cols:
+        c.execute("alter table products add column hsn text default ''")
     if not c.execute("select 1 from users").fetchone():
         pw = os.environ.get("ADMIN_PASSWORD") or secrets.token_urlsafe(9)
         c.execute("insert into users(username,pw) values('admin',?)",(generate_password_hash(pw),))
@@ -503,16 +505,19 @@ document.getElementById('f').onsubmit=e=>{const c=cart.filter(x=>x.qty>0);
 let scanner=null;
 function openScanner(){
   document.getElementById('scanner-modal').classList.add('open');
-  scanner=new Html5Qrcode('scanner-view',{formatsToSupport:[
-    Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,
-    Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,
-    Html5QrcodeSupportedFormats.CODE_128,Html5QrcodeSupportedFormats.CODE_39,
-    Html5QrcodeSupportedFormats.CODE_93,Html5QrcodeSupportedFormats.ITF,
-    Html5QrcodeSupportedFormats.QR_CODE]});
-  scanner.start({facingMode:'environment'},{fps:15,qrbox:{width:260,height:150}},
-    code=>{closeScanner();handleBarcode(code)},()=>{}
-  ).catch(err=>{alert('Camera error: '+err);closeScanner()});}
-function closeScanner(){if(scanner){try{scanner.stop().catch(()=>{})}catch(e){}scanner=null}
+  try{
+    scanner=new Html5Qrcode('scanner-view',{formatsToSupport:[
+      Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128,Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.CODE_93,Html5QrcodeSupportedFormats.ITF,
+      Html5QrcodeSupportedFormats.QR_CODE]});
+    scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:150}},
+      code=>{closeScanner();handleBarcode(code)},()=>{}
+    ).catch(err=>{alert('Camera error: '+err+'. Make sure you allow camera access and use HTTPS.');closeScanner()});
+  }catch(e){alert('Scanner not available: '+e);closeScanner()}}
+function closeScanner(){
+  if(scanner){try{scanner.stop().then(()=>{scanner.clear();scanner=null}).catch(()=>{scanner=null})}catch(e){scanner=null}}
   document.getElementById('scanner-modal').classList.remove('open')}
 function handleBarcode(code){
   const p=P.find(x=>x.barcode&&x.barcode===code)||P.find(x=>x.barcode&&x.barcode.toLowerCase()===code.toLowerCase());
@@ -561,15 +566,15 @@ def products():
         f = request.form
         bc,name = f.get("barcode","").strip(), f.get("name","").strip()
         if not bc or not name: flash("Barcode and name are required."); return redirect("/products")
-        vals = (name, f.get("dept","").strip() or "General", num(f.get("gst"),18),
+        vals = (name, f.get("dept","").strip() or "General", f.get("hsn","").strip(), num(f.get("gst"),18),
                 num(f.get("mrp")), num(f.get("cost")), num(f.get("reorder"),5))
         if d.execute("select 1 from products where barcode=?",(bc,)).fetchone():
-            d.execute("update products set name=?,dept=?,gst=?,mrp=?,cost=?,reorder=?,active=1 where barcode=?",vals+(bc,))
+            d.execute("update products set name=?,dept=?,hsn=?,gst=?,mrp=?,cost=?,reorder=?,active=1 where barcode=?",vals+(bc,))
             if f.get("stock","").strip()!="":
                 d.execute("update products set stock=? where barcode=?",(num(f["stock"]),bc))
             flash("Product updated.")
         else:
-            d.execute("insert into products(name,dept,gst,mrp,cost,reorder,barcode,stock,active) values(?,?,?,?,?,?,?,?,1)",
+            d.execute("insert into products(name,dept,hsn,gst,mrp,cost,reorder,barcode,stock,active) values(?,?,?,?,?,?,?,?,?,1)",
                       vals+(bc,num(f.get("stock"))))
             flash("Product added.")
         d.commit(); return redirect("/products")
@@ -577,12 +582,15 @@ def products():
     return page("""
 <div class="page-head"><h1>""" + ICONS['products'] + """ {{ t('products') }}</h1></div>
 <p class="sub">Enter an existing barcode to update. Leave stock blank to keep current value.</p>
-<div class="card mb-3"><form method="post"><input type="hidden" name="_t" value="{{ token }}">
+<div class="card mb-3"><form method="post" id="prod-form"><input type="hidden" name="_t" value="{{ token }}">
 <div class="fr">
-  <div class="fg" style="max-width:150px"><label>Barcode</label><input name="barcode" id="p-bc" placeholder="Scan / type" required></div>
+  <div class="fg" style="max-width:150px"><label>Barcode</label>
+    <div style="display:flex;gap:4px"><input name="barcode" id="p-bc" placeholder="Scan / type" required style="flex:1">
+    <button type="button" class="bs bsm" onclick="openProdScanner()" title="Scan barcode">""" + ICONS['camera'] + """</button></div></div>
   <div class="fg" style="flex:2"><label>Product name</label><input name="name" id="p-name" placeholder="Product name" required></div>
   <div class="fg" style="max-width:130px"><label>Department</label><input name="dept" id="p-dept" placeholder="General" list="dl">
     <datalist id="dl">{% for x in depts %}<option value="{{ x }}">{% endfor %}</datalist></div>
+  <div class="fg" style="max-width:100px"><label>HSN Code</label><input name="hsn" id="p-hsn" placeholder="HSN"></div>
   <div class="fg" style="max-width:120px"><label>MRP (incl GST)</label><input name="mrp" id="p-mrp" type="number" step="0.01" placeholder="0.00" required></div>
   <div class="fg" style="max-width:100px"><label>Cost</label><input name="cost" id="p-cost" type="number" step="0.01" placeholder="0.00"></div>
   <div class="fg" style="max-width:80px"><label>GST %</label><input name="gst" id="p-gst" type="number" step="any" value="18"></div>
@@ -591,15 +599,23 @@ def products():
   <div style="display:flex;align-items:flex-end"><button type="submit">Save</button></div>
 </div></form></div>
 
+<!-- Product Scanner Modal -->
+<div id="prod-scanner-modal" class="modal-bg" onclick="if(event.target===this)closeProdScanner()">
+  <div class="modal"><div class="flex gap-2 mb-2"><h2>Scan Barcode</h2><button type="button" class="bg ml-a" onclick="closeProdScanner()">✕</button></div>
+  <div id="prod-scanner-view" style="border-radius:var(--r-lg);overflow:hidden;background:#000;min-height:200px"></div>
+  <p class="text-m text-sm" style="text-align:center;margin-top:10px">Point camera at barcode</p></div>
+</div>
+
 <div class="filters"><input id="pf" placeholder="🔍 Search products…" style="max-width:260px" oninput="filterP()">
 <select id="pdf" onchange="filterP()" style="max-width:160px"><option value="">All departments</option>
 {% for x in depts %}<option value="{{ x }}">{{ x }}</option>{% endfor %}</select>
 <span class="text-m text-sm ml-a">{{ rows|length }} products</span></div>
 
-<div class="tw"><table><thead><tr><th>Barcode</th><th>Name</th><th>Dept</th><th class="n">MRP</th><th class="n">Cost</th>
+<div class="tw"><table><thead><tr><th>Barcode</th><th>Name</th><th>Dept</th><th>HSN</th><th class="n">MRP</th><th class="n">Cost</th>
 <th class="n">GST%</th><th class="n">Stock</th><th>Actions</th></tr></thead><tbody id="ptb">
 {% for p in rows %}<tr data-name="{{ p.name|lower }}" data-dept="{{ p.dept }}">
 <td><code>{{ p.barcode }}</code></td><td class="fw6">{{ p.name }}</td><td><span class="badge b-pri">{{ p.dept }}</span></td>
+<td><code>{{ p.hsn or '—' }}</code></td>
 <td class="n">{{ p.mrp|inr }}</td><td class="n">{{ p.cost|inr }}</td><td class="n">{{ '%g'|format(p.gst) }}%</td>
 <td class="n">{% if p.stock<=p.reorder %}<span class="stock-low">{{ '%g'|format(p.stock) }}</span>{% else %}{{ '%g'|format(p.stock) }}{% endif %}</td>
 <td class="action-cell">
@@ -615,10 +631,20 @@ function filterP(){const v=document.getElementById('pf').value.toLowerCase(),dep
     const n=r.dataset.name||'',d=r.dataset.dept||'';
     r.style.display=(!v||n.includes(v))&&(!dept||d===dept)?'':'none'})}
 function fillEdit(p){document.getElementById('p-bc').value=p.barcode;document.getElementById('p-name').value=p.name;
-  document.getElementById('p-dept').value=p.dept;document.getElementById('p-mrp').value=p.mrp;
+  document.getElementById('p-dept').value=p.dept;document.getElementById('p-hsn').value=p.hsn||'';document.getElementById('p-mrp').value=p.mrp;
   document.getElementById('p-cost').value=p.cost;document.getElementById('p-gst').value=p.gst;
   document.getElementById('p-stock').value='';document.getElementById('p-reorder').value=p.reorder;
   document.getElementById('p-bc').focus();window.scrollTo({top:0,behavior:'smooth'})}
+let prodScanner=null;
+function openProdScanner(){
+  document.getElementById('prod-scanner-modal').classList.add('open');
+  try{prodScanner=new Html5Qrcode('prod-scanner-view');
+  prodScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:150}},
+    code=>{closeProdScanner();document.getElementById('p-bc').value=code;document.getElementById('p-name').focus()},
+    ()=>{}).catch(err=>{alert('Camera error: '+err);closeProdScanner()})}
+  catch(e){alert('Camera not available: '+e);closeProdScanner()}}
+function closeProdScanner(){if(prodScanner){try{prodScanner.stop().then(()=>{prodScanner.clear();prodScanner=null}).catch(()=>{prodScanner=null})}catch(e){prodScanner=null}}
+  document.getElementById('prod-scanner-modal').classList.remove('open')}
 </script>""", rows=rows, depts=sorted({r["dept"] for r in rows}))
 
 
@@ -649,7 +675,15 @@ def inventory():
         join products p on p.id=sa.product_id order by sa.id desc limit 20""").fetchall()
     return page("""
 <div class="page-head"><h1>""" + ICONS['inventory'] + """ {{ t('inventory') }}</h1>
+<button type="button" class="scan-btn" onclick="openInvScanner()">""" + ICONS['camera'] + """ Scan to Adjust</button>
 <a class="btn bs ml-a" href="/inventory/csv">""" + ICONS['download'] + """ Export CSV</a></div>
+
+<!-- Inventory Scanner Modal -->
+<div id="inv-scanner-modal" class="modal-bg" onclick="if(event.target===this)closeInvScanner()">
+  <div class="modal"><div class="flex gap-2 mb-2"><h2>Scan Barcode to Adjust Stock</h2><button type="button" class="bg ml-a" onclick="closeInvScanner()">✕</button></div>
+  <div id="inv-scanner-view" style="border-radius:var(--r-lg);overflow:hidden;background:#000;min-height:200px"></div>
+  <p class="text-m text-sm" style="text-align:center;margin-top:10px">Scan a product barcode to adjust its stock</p></div>
+</div>
 
 <div class="metrics">
   <div class="metric"><div class="ml">Total Products</div><div class="mv">{{ rows|length }}</div></div>
@@ -706,6 +740,20 @@ function openAdj(id,name,stock){document.getElementById('adj-pid').value=id;
   document.getElementById('adj-qty').value='';document.getElementById('adj-modal').classList.add('open');
   setTimeout(()=>document.getElementById('adj-qty').focus(),100)}
 function closeAdj(){document.getElementById('adj-modal').classList.remove('open')}
+const invProds={{ rows|tojson }};
+let invScanner=null;
+function openInvScanner(){
+  document.getElementById('inv-scanner-modal').classList.add('open');
+  try{invScanner=new Html5Qrcode('inv-scanner-view');
+  invScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:150}},
+    code=>{closeInvScanner();
+      const p=invProds.find(x=>x.barcode&&x.barcode===code);
+      if(p){openAdj(p.id,p.name,p.stock);if(navigator.vibrate)navigator.vibrate(100)}
+      else{alert('No product found for barcode: '+code)}},
+    ()=>{}).catch(err=>{alert('Camera error: '+err);closeInvScanner()})}
+  catch(e){alert('Camera not available: '+e);closeInvScanner()}}
+function closeInvScanner(){if(invScanner){try{invScanner.stop().then(()=>{invScanner.clear();invScanner=null}).catch(()=>{invScanner=null})}catch(e){invScanner=null}}
+  document.getElementById('inv-scanner-modal').classList.remove('open')}
 </script>""", rows=rows, total_val=total_val, total_mrp_val=total_mrp_val, low_count=low_count,
     adj=recent_adj, depts=sorted({r["dept"] for r in rows}))
 
