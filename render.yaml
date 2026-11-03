@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: subramani-stores-pos
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: STORE_NAME
+        value: Subramani Stores
+      - key: ADMIN_PASSWORD
+        value: "12345"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: "3.11.6"
